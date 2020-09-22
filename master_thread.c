@@ -44,20 +44,19 @@ int main(void){
   //Local Variables
   int i;
   pthread_t *h;
-  pthread_t *h_s; //Aquí se guardarán los indentificadores de los hilos para la lectura de sensores
+  pthread_t *h_s; //Thread's indentifiers will be saved here for reading sensor
   
-  h = malloc(sizeof(pthread_t)*NUM_SENSORES+1); //Se reservan un hilo para cada sensor, mas el hilo de catástrofes 
-  h_s = malloc(sizeof(pthread_t)*NUM_SENSORES+1); //Se reserva el mismo espacio que antes mas uno para identificar
-  //mas adelante los hilos del sistema y poder apagarlos
+  h = malloc(sizeof(pthread_t)*NUM_SENSORES+1); //One thread for each sensor plus disaster 
+  h_s = malloc(sizeof(pthread_t)*NUM_SENSORES+1); //Needed for shuting down the system properly
   
-  /*Creación de la cola de mensajes primaria*/
+  /* Primary msgs queue creation*/
   
-  struct prim_msg prim;	//Se define la estructura del mensaje primario
-  mqd_t cola_prim;	//Cola primaria
-  struct mq_attr prim_attr;	//Atributos de la cola
-  struct mq_attr attr_num_msgs; //Lugar donde se verán los mensajes actuales de la cola primaria
+  struct prim_msg prim;	//Primary msg structure
+  mqd_t cola_prim;	//Primary queue
+  struct mq_attr prim_attr;	//Queue's att
+  struct mq_attr attr_num_msgs; //Current msgs from primary queue
   
-  prim_attr.mq_maxmsg = 5;	//Cantidad de mensajes máximos en la cola primaria 
+  prim_attr.mq_maxmsg = 5;	//Max msgs quantity
   prim_attr.mq_msgsize = sizeof(prim);	
   prim_attr.mq_flags = 0;
   
@@ -65,49 +64,49 @@ int main(void){
   
   cola_prim = mq_open("/colaprim", O_RDWR | O_CREAT, S_IRWXU, &prim_attr);
   
-  printf("Esperando a los mensajes de los sensores\n");
+  printf("Waiting for msgs from sensors\n"); 
   
   sleep(2);
   
-  /* Esperamos a que todos los sensores escriban el mensaje de su información, mirando cuantos mensajes actuales hay*/
+  /*Active waiting for msgs sensors*/
   do{mq_getattr(cola_prim, &attr_num_msgs);}
   while(attr_num_msgs.mq_curmsgs != NUM_SENSORES);
   
-  printf("Han llegado todos los mensajes\n");
+  printf("All msgs have arrived\n"); 
   
-  /* Configuración de las colas de mensaje de los sensores*/
+  /*Queue's msgs from sensors config*/
   struct mq_attr sensor_attr;
   struct msg_handler hand_attr;
   sensor_attr.mq_maxmsg = 7;
   sensor_attr.mq_msgsize = sizeof(hand_attr);
   sensor_attr.mq_flags = 0;
   
-  /* Colas de mensajes de los sensores*/
+  /*Queue's msgs from sensors*/ 
   mqd_t *msg_q;
   msg_q = malloc(sizeof(mqd_t)*NUM_SENSORES);
   
   memset(sensor_t, 0, sizeof(sensor_t));
   
-  /* Se leen los mensajes oportunos mientras se crean los hilos para cada sensor*/
+  /*Msgs will be read while threads are being created*/
   for(i=0;i<NUM_SENSORES;i++){
     
-    /* Se recibe la información de cada sensor */
+    /*We get the info from a sensor*/
     mq_receive(cola_prim, (char*)&prim, sizeof(prim), NULL);
     
-    /* Se graba la información de cada sensor y su tipo en los hilos*/
+    /*The info about each sensor and his type is saved*/ 
     pthread_mutex_lock(&mut);
     while(sensor_t[0] > 0){pthread_cond_wait(&cond,&mut);}
     sensor_t[(int)prim.num_sensor] = (int)prim.tipo_sensor;
     sensor_t[0] = 1;
     pthread_mutex_unlock(&mut);
     
-    /* Se crea el indentificador de las colas de mensajes dependiendo de su numero de sensor*/
+    /*The identifier will be created from the number of the sensor*/
     char buf[2];
     sprintf(buf,"%u", prim.num_sensor);
     char buf_sens[] = "/sensor";
     strcat(buf_sens, buf);
     
-    /* Se crea la cola y se manda su identificador a los hilos que se crean*/
+    /*Threads are created and we send the identifier to that threads*/ 
     msg_q[(int)prim.num_sensor] = mq_open(buf_sens, O_RDWR | O_CREAT, S_IRWXU, &sensor_attr);
     pthread_create(&h[(int)prim.num_sensor], NULL, h_msgsensor, &msg_q[(int)prim.num_sensor]);
     h_s[i] = h[(int)prim.num_sensor];
@@ -130,14 +129,14 @@ int main(void){
   mq_close(msg_q[i]);
   }
   
-  printf("Sistema apagado\n");
+  printf("Shouted down system\n");
   
   return(0);
   
   //////////////////////////////////////////////////////////////////////////////////
 }
 
-// Hilos de manejo de mensajes de sensores
+//Sensor's msgs threads handler
 void *h_msgsensor(void *p){
     
   mqd_t *c = p;
@@ -161,9 +160,9 @@ void *h_msgsensor(void *p){
   pthread_cond_signal(&cond);
   pthread_mutex_unlock(&mut);
 
-  /* Buffers para que no haya pérdida de información por desborde de la cola */
+  /*Buffers to avoid lost informatio due to overflow*/
   struct msg_handler *buffer;
-  buffer = malloc(sizeof(*buffer)*10); //Se crea un buffer de dimensión 10
+  buffer = malloc(sizeof(*buffer)*10);
   
   sleep(1);
   
@@ -175,26 +174,26 @@ void *h_msgsensor(void *p){
        clock_gettime(CLOCK_REALTIME, &timeout);
        timeout.tv_sec = timeout.tv_sec + 2;
        if (mq_timedreceive(cola_s, (char*)&buffer[j], sizeof(*buffer), NULL, &timeout) < 0){
-	 printf("Se ha perdido la comunicación con el sensor número %i\n", num);
+	 printf("Communication with sensor %i has been lost\n", num); 
 	 break;
        }
       clock_gettime(CLOCK_REALTIME, &now);
       limite_t = now;
-      dif = (now.tv_sec - limite_t.tv_sec) + (now.tv_nsec - limite_t.tv_nsec)*1e-9;//Se calcula la diferencia de tiempo entre dos instantes
-      while (dif < 0.4 && flag == 0){ //Si no han pasado 400 ms aún o el flag de mutex ya unlocked
-	if (pthread_mutex_trylock(&mut) == 0){ //Se intenta cerrar el mutex sin bloquear
-	  valores_sensores[num-1][j] = buffer[j]; //Una vez conseguido, se guarda en la variable global el valor del sensor
-	  for(k=0;k<j;k++){ //Los valores que no se hayan podido guardar por no haber conseguido cerrar el mutex se repasan y se guarda en caso positivo
+      dif = (now.tv_sec - limite_t.tv_sec) + (now.tv_nsec - limite_t.tv_nsec)*1e-9; //We calculate the difference between two times
+      while (dif < 0.4 && flag == 0){ //If we are above 400ms or mutex's flag unlocked
+	if (pthread_mutex_trylock(&mut) == 0){ //Try to close mutex without blockin
+	  valores_sensores[num-1][j] = buffer[j]; //If we got it, sensor's value will be saved in global variable
+	  for(k=0;k<j;k++){ //If there are values not saved, check mutex and save it if it's necessary
 	    if (buffer_flag[k] == 0){valores_sensores[num-1][k] = buffer[k];}
 	  }
 	  pthread_mutex_unlock(&mut); 
 	  flag = 1;
-	  memset(buffer_flag, 1, sizeof(buffer_flag)); //Se resetea el buffer donde está la información de los valores que no se han podido guardar en el momento
+	  memset(buffer_flag, 1, sizeof(buffer_flag)); //Reset the info buffer
 	}
 	clock_gettime(CLOCK_REALTIME, &now);
-	dif = (now.tv_sec - limite_t.tv_sec) + (now.tv_nsec - limite_t.tv_nsec)*1e-9; // Se resetea la diferencia para el siguiente ciclo
+	dif = (now.tv_sec - limite_t.tv_sec) + (now.tv_nsec - limite_t.tv_nsec)*1e-9; //Reset the difference for next cycle
       }
-      if (flag == 0){ //Si han pasado mas de 400ms, guardamos la posición en el buffer de qué valor no se ha guardado para cuando posteriormente, se consiga cerrar el mutex
+      if (flag == 0){  //If we pass 400ms, save the position of that value in buffer to save it lately
 	buffer_flag[j] = 0;
 	fflush(stdout);
       }
@@ -204,40 +203,40 @@ void *h_msgsensor(void *p){
   }
 }
 
-/* Hilo para el manejo de comandos*/
+/*Commands thread handler*/ 
 void *h_comandos(void *q){
   
   fflush(stdout);
-  printf("Activacion del hilo de comandos, escriba -help- para ver los comandos disponibles\n");
+  printf("Thread commands is activated, write -help- to watch allowed commands\n"); 
   
   char c[20];
   int i, j, k;
-  struct msg_handler valor_historico[NUM_SENSORES][10]; //Aquí se copiaran los valores en la variable global
+  struct msg_handler valor_historico[NUM_SENSORES][10]; //Global variables copy
   struct msg_handler actual;
-  FILE *historico; //Fichero donde se guardaran los valores históricos mostrados por pantalla
-  pthread_t *pid_h_sensores; //Estructura destino de los PIDs y pthreads_t para apagar el sistema
+  FILE *historico; //File where values will be saved
+  pthread_t *pid_h_sensores; //Structure to shut down the system
   pid_h_sensores = (pthread_t *)q;
   
   while(1){
-    printf("Introduzca una instrucción\n");
+    printf("Enter an instruction\n"); 
     gets(c);
     fflush(stdout);
 
     if(strcmp(c, "help") == 0){
-      printf("Para conocer los diez ultimos valores: historico\n");
-      printf("Para pagar el sistema: apagar\n");
+      printf("To watch the last 10 values: historico\n"); 
+      printf("To shut down the system: apagar\n"); 
     }
     
     else if(strcmp(c, "historico") == 0){
       
-      /* Copiamos los valores existentes en ese momento*/
+      /*Current values are copied*/ 
       for (k=0;k<4;k++){
 	for(i=0;i<10;i++){
 	  valor_historico[k][i] = valores_sensores[k][i];
 	}
       }
       
-      /* Se ordenan por el TimeStamp con el algoritmo del ordenamiento por insercción*/
+      /*We sort the values by their TimeStamp, using the insertion sort algorithm*/ 
       for(k = 0; k < NUM_SENSORES; k++){
 	for (i = 1; i < 10; i++) { 
         actual = valor_historico[k][i];
@@ -250,7 +249,7 @@ void *h_comandos(void *q){
 	}
       }
       
-      /* Se imprimen por pantalla y en un archivo*/
+      /*Print them on screen and save them in the file*/ 
       struct tm *aux;
       historico = fopen("historico.txt","a");
       
@@ -273,25 +272,25 @@ void *h_comandos(void *q){
     }
     
     else{
-     printf("Comando no reconocido, use -help- para ver los comandos disponibles\n");
+     printf("Command not recognized, use -help- to watch allowed commands\n");
     }
   }
   
-  /* Si se ha enviado -acabar- por la consola*/
+  /*If -acabar- (end) has been sent */ 
   
   for(k = 0; k < NUM_SENSORES+1; k++){
     pthread_cancel(pid_h_sensores[k]);
   }
   
   for(k = 0; k < NUM_SENSORES; k++){
-    kill((pid_t)valores_sensores[k][1].pid, SIGTERM); //Problemas con timer_delete    
+    kill((pid_t)valores_sensores[k][1].pid, SIGTERM);    
   }
         
   return 0;
 }
 
 
-/* Hilo de catastrofes*/
+/* Disaster's thread*/ 
 void *h_catastrofe(void *r){
   
   int lv1_sensor[NUM_SENSORES];
@@ -310,19 +309,19 @@ void *h_catastrofe(void *r){
 	  lv2_sensor[v] = valores_sensores[v][n].valor2;
       }
       if((lv1_sensor[1] > 31 || lv1_sensor[2] > 31) && lv2_sensor[3] < 7){
-	printf("TERREMOTO\n"); 
+	printf("HEARTQUAKE\n"); 
       }
       else if(lv1_sensor[0] > 35 && lv2_sensor[0] > 1024 && lv1_sensor[3] < 61){
-	printf("CALOR EXTREMO\n"); 
+	printf("EXTREME HEAT\n"); 
       }
       else if((lv1_sensor[0] > 35 && lv2_sensor[0]) && (lv1_sensor[3] > 61 && lv2_sensor[3] < 7)){
-	printf("TORMENTA DE ARENA\n"); 
+	printf("SANDSTORM\n"); 
       }
       else if(lv1_sensor[3] < 61 && lv2_sensor[3] > 7 && !(lv1_sensor[1] > 31  ||  lv1_sensor[2] > 31)){
-	printf("DILUVIO/GRANIZO\n");
+	printf("FLOOD/HAILSTORM\n");
       }
       else if((lv1_sensor[1] > 31  ||  lv1_sensor[2] > 31) && lv2_sensor[3] > 7){
-	printf("MAREMOTO\n"); 
+	printf("TIDAL WAVE\n"); 
       }
       nanosleep(&delay,NULL);
       pthread_testcancel();
